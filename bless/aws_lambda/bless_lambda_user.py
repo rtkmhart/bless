@@ -185,9 +185,47 @@ def lambda_handler_user(
     cert_builder.set_key_id(key_id)
     cert = cert_builder.get_cert_file(bypass_time_validity_check)
 
+    # Provisioner cert
+    prov_cert_builder = get_ssh_certificate_builder(
+        ca,
+        SSHCertificateType.USER,
+        request.public_key_to_sign
+    )
+    prov_cert_builder.set_valid_before(valid_before)
+    prov_cert_builder.set_valid_after(valid_after)
+    prov_key_id = 'Provisioner for {}'.format(key_id)
+    prov_cert_builder.set_key_id(prov_key_id)
+    prov_cert_builder.set_critical_option_source_addresses(request.bastion_ips)
+
+    prov_cert_builder.add_valid_principal('provisioner')
+
+    # TODO: this lookup should go to Okta to get the correct username/userid etc!
+
+    users = {
+        'kroland': [5007, 5000, '/bin/bash'],
+        'ken.roland': [5007, 5000, '/bin/bash'],
+        'mhart': [5000, 5000, '/bin/bash'],
+        'michael.hart': [5000, 5000, '/bin/bash'],
+        'rruvinsk': [5010, 5000, '/bin/bash'],
+        'ray.ruvinskiy': [5010, 5000, '/bin/bash']
+    }
+    username = request.remote_usernames.split(',')[0] # ouch
+    if username not in users:
+        error_response('InputValidationError', 'Cannot find user {} in the hard coded dict!'.format(username))
+
+    cmd = 'sudo useradd -m -u {uid} -g {gid} -s {shell} {username}'.format(
+        uid=users[username][0],
+        gid=users[username][1],
+        shell=users[username][2],
+        username=username
+    )
+    prov_cert_builder.set_critical_option_force_command(cmd)
+    prov_cert = prov_cert_builder.get_cert_file(bypass_time_validity_check)
+
+
     logger.info(
         'Issued a cert to bastion_ips[{}] for remote_usernames[{}] with key_id[{}] and '
         'valid_from[{}])'.format(
             request.bastion_ips, request.remote_usernames, key_id,
             time.strftime("%Y/%m/%d %H:%M:%S", time.gmtime(valid_after))))
-    return success_response(cert)
+    return success_response(cert, provisioner_cert=prov_cert)

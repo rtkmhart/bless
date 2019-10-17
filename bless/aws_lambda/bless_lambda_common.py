@@ -14,10 +14,13 @@ from bless.config.bless_config import BLESS_OPTIONS_SECTION, LOGGING_LEVEL_OPTIO
 global_bless_cache = None
 
 
-def success_response(cert):
-    return {
-        'certificate': cert
+def success_response(cert, provisioner_cert=None):
+    response = {
+        'certificate': cert,
     }
+    if provisioner_cert:
+        response['provisioner_cert'] = provisioner_cert
+    return None
 
 
 def error_response(error_type, error_message):
