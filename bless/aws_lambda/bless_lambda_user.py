@@ -6,6 +6,8 @@
 import time
 
 import boto3
+from botocore.exceptions import ClientError
+
 from bless.aws_lambda.bless_lambda_common import success_response, error_response, set_logger, check_entropy, \
     setup_lambda_cache
 from bless.config.bless_config import BLESS_OPTIONS_SECTION, \
@@ -56,6 +58,7 @@ def lambda_handler_user(
     config = bless_cache.config
 
     logger = set_logger(config)
+    logger.info('Start: event: {}'.format(event))
 
     certificate_validity_before_seconds = config.getint(BLESS_OPTIONS_SECTION,
                                                         CERTIFICATE_VALIDITY_BEFORE_SEC_OPTION)
@@ -87,7 +90,11 @@ def lambda_handler_user(
     if bless_cache.ca_private_key_password is None:
         return error_response('ClientError', bless_cache.ca_private_key_password_error)
     else:
-        ca_private_key_password = bless_cache.ca_private_key_password
+        try:
+            ca_private_key_password = bless_cache.ca_private_key_password
+        except Exception as e:
+            logger.error("Caught some error trying to get the private key password: {}".format(e))
+            raise e
 
     # if running as a Lambda, we can check the entropy pool and seed it with KMS if desired
     if entropy_check:
@@ -107,6 +114,7 @@ def lambda_handler_user(
         valid_after = current_time - certificate_validity_before_seconds
         bypass_time_validity_check = False
 
+    logger.info("Before the commented out section")
     # Authenticate the user with KMS, if key is setup
     if config.getboolean(KMSAUTH_SECTION, KMSAUTH_USEKMSAUTH_OPTION):
         if request.kmsauth_token:
@@ -159,12 +167,25 @@ def lambda_handler_user(
         else:
             return error_response('InputValidationError', 'Invalid request, missing kmsauth token')
 
+    # TODO: if the public_key_sig field exists, verify it here!
+    # TODO: we assume only one principal is allowed, fix me.
+
+    # Check the cert with the first principal in S3
+    principal = request.remote_usernames.split(',')[0]
+    logger.info('Principal: %s', principal)
+    try:
+        if not verify_public_key(logger, config, request, principal):
+            return error_response('ValidationException', 'Could not verify your public key with what is in S3.')
+    except Exception as e:
+        return error_response('ValidationException', str(e))
+
     # Build the cert
     ca = get_ssh_certificate_authority(ca_private_key, ca_private_key_password)
-    cert_builder = get_ssh_certificate_builder(ca, SSHCertificateType.USER,
-                                               request.public_key_to_sign)
-    for username in request.remote_usernames.split(','):
-        cert_builder.add_valid_principal(username)
+    cert_builder = get_ssh_certificate_builder(ca, SSHCertificateType.USER, request.public_key_to_sign)
+    # Originally bless supports multiple principals but we think that's crap and only support one.
+    # for username in request.remote_usernames.split(','):
+    #    cert_builder.add_valid_principal(username)
+    cert_builder.add_valid_principal(principal)
 
     cert_builder.set_valid_before(valid_before)
     cert_builder.set_valid_after(valid_after)
@@ -209,19 +230,17 @@ def lambda_handler_user(
         'rruvinsk': [5010, 5000, '/bin/bash'],
         'ray.ruvinskiy': [5010, 5000, '/bin/bash']
     }
-    username = request.remote_usernames.split(',')[0] # ouch
-    if username not in users:
-        error_response('InputValidationError', 'Cannot find user {} in the hard coded dict!'.format(username))
+    if principal not in users:
+        return error_response('InputValidationError', 'Cannot find user {} in the hard coded dict!'.format(principal))
 
     cmd = 'sudo useradd -m -u {uid} -g {gid} -s {shell} {username}'.format(
-        uid=users[username][0],
-        gid=users[username][1],
-        shell=users[username][2],
-        username=username
+        uid=users[principal][0],
+        gid=users[principal][1],
+        shell=users[principal][2],
+        username=principal
     )
     prov_cert_builder.set_critical_option_force_command(cmd)
     prov_cert = prov_cert_builder.get_cert_file(bypass_time_validity_check)
-
 
     logger.info(
         'Issued a cert to bastion_ips[{}] for remote_usernames[{}] with key_id[{}] and '
@@ -229,3 +248,53 @@ def lambda_handler_user(
             request.bastion_ips, request.remote_usernames, key_id,
             time.strftime("%Y/%m/%d %H:%M:%S", time.gmtime(valid_after))))
     return success_response(cert, provisioner_cert=prov_cert)
+
+
+def verify_public_key(logger, config, request, principal):
+    """
+    Verify a public key and username in S3. Future improvements are to support multiple paths in S3
+    :param logger:
+    :param BlessConfig config:
+    :param Schema request: The cache for config etc
+    :param str principal:
+    """
+    key = '{principal}/id_rsa.pub'.format(
+        principal=principal
+    )
+    logger.info('Going to verify public key for key %s', key)
+    s3_client = boto3.client('s3')
+    try:
+        response = s3_client.get_object(Bucket=config.gets3bucket(), Key=key)
+    except ClientError as e:
+        # AllAccessDisabled error == bucket or object not found
+        mssg = 'Cannot retrieve object from s3: s3://{}/{}: {}'.format(
+            config.gets3bucket(),
+            key,
+            str(e)
+        )
+        logger.error(mssg)
+        raise Exception(mssg)
+
+    if response['Body']:
+        s3_public_key = response['Body'].read().decode('utf-8')
+        if s3_public_key == request.public_key_to_sign:
+            logger.info('Public key in S3 "s3://{bucket}/{key}" matches the one given for "{principal}'.format(
+                bucket=config.gets3bucket(),
+                key=key,
+                principal=principal
+            ))
+            return True
+        else:
+            logger.info('Public key in S3 "s3://{bucket}/{key}" does NOT match the one given for "{principal}'.format(
+                bucket=config.gets3bucket(),
+                key=key,
+                principal=principal
+            ))
+            return False
+    else:
+        logger.info('Could not find public key in S3 "s3://{bucket}/{key}" for "{principal}'.format(
+            bucket=config.gets3bucket(),
+            key=key,
+            principal=principal
+        ))
+        return False

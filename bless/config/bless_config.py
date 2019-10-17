@@ -78,6 +78,9 @@ IAM_GROUP_NAME_VALIDATION_FORMAT_DEFAULT = 'ssh-{}'
 REMOTE_USERNAMES_BLACKLIST_OPTION = 'remote_usernames_blacklist'
 REMOTE_USERNAMES_BLACKLIST_DEFAULT = None
 
+S3_SSH_KEY_BUCKET_OPTION = 's3_ssh_key_bucket'
+S3_SSH_KEY_BUCKET_DEFAULT = None
+
 
 class BlessConfig(configparser.RawConfigParser, object):
     def __init__(self, aws_region, config_file):
@@ -111,7 +114,8 @@ class BlessConfig(configparser.RawConfigParser, object):
                     CA_PRIVATE_KEY_COMPRESSION_OPTION: CA_PRIVATE_KEY_COMPRESSION_OPTION_DEFAULT,
                     SERVER_CERTIFICATE_VALIDITY_BEFORE_SEC_OPTION: SERVER_CERTIFICATE_VALIDITY_BEFORE_SEC_DEFAULT,
                     SERVER_CERTIFICATE_VALIDITY_AFTER_SEC_OPTION: SERVER_CERTIFICATE_VALIDITY_AFTER_SEC_DEFAULT,
-                    HOSTNAME_VALIDATION_OPTION: HOSTNAME_VALIDATION_DEFAULT
+                    HOSTNAME_VALIDATION_OPTION: HOSTNAME_VALIDATION_DEFAULT,
+                    S3_SSH_KEY_BUCKET_OPTION: S3_SSH_KEY_BUCKET_DEFAULT
                     }
         configparser.RawConfigParser.__init__(self, defaults=defaults)
         self.read(config_file)
@@ -162,6 +166,9 @@ class BlessConfig(configparser.RawConfigParser, object):
         # read the private key .pem
         with open(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, ca_private_key_file), 'rb') as f:
             return self._decompress(f.read(), compression)
+
+    def gets3bucket(self):
+        return self.get(BLESS_OPTIONS_SECTION, S3_SSH_KEY_BUCKET_OPTION)
 
     def has_option(self, section, option):
         """

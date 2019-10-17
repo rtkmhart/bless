@@ -20,7 +20,7 @@ def success_response(cert, provisioner_cert=None):
     }
     if provisioner_cert:
         response['provisioner_cert'] = provisioner_cert
-    return None
+    return response
 
 
 def error_response(error_type, error_message):
